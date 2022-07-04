@@ -2,7 +2,6 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
 use std::process::{Command, Stdio};
-use const_format::formatcp;
 
 macro_rules! tty_af {
     ($num:literal) => { concat!("\x1b[", $num, "m") };
@@ -12,8 +11,6 @@ const TTY_CLEAR: &str = tty_af!(0);
 const TTY_BOLD: &str = tty_af!(1);
 const TTY_RED: &str = tty_af!(31);
 const TTY_BLUE: &str = tty_af!(34);
-const TTY_BOLD_RED: &str = formatcp!("{}{}", TTY_BOLD, TTY_RED);
-const TTY_BOLD_BLUE: &str = formatcp!("{}{}", TTY_BOLD, TTY_BLUE);
 
 fn stash_ref(id: u32) -> String {
     format!("stash@{{{}}}", id)
@@ -50,7 +47,8 @@ fn git_stash_show(stash_num: u32) -> io::Result<bool> {
 }
 
 fn read_line() -> io::Result<String> {
-    io::stdin().lock().lines().next().unwrap()
+    io::stdin().lock().lines().next()
+        .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))?
 }
 
 fn drop_stash(stash_num: u32) -> io::Result<()> {
@@ -73,7 +71,7 @@ fn commit_to_branch(stash_num: u32, can_save_branch: bool) -> io::Result<()> {
     let stash_name = stash_ref(stash_num);
     if !can_save_branch {
         eprintln!(
-            "{TTY_BOLD_RED}\
+            "{TTY_BOLD}{TTY_RED}\
             ERROR - Can't commit branches with unstaged files!.\
             {TTY_CLEAR}"
         );
@@ -119,7 +117,7 @@ fn main() -> io::Result<()> {
     let can_save_branch = !has_local_changes()?;
     if !can_save_branch {
         eprintln!(
-            "{TTY_BOLD_RED}\
+            "{TTY_BOLD}{TTY_RED}\
             WARNING - Can't backup stashes as branches with local changes.\n\
             Resolve local changes to backup stashes as branches.\
             {TTY_CLEAR}"
@@ -135,11 +133,23 @@ fn main() -> io::Result<()> {
             break;
         }
         once = true;
-        print!("{TTY_BOLD_BLUE}Action on this stash [d,b,s,a,q,?]? {TTY_CLEAR}");
+        print!("{TTY_BOLD}{TTY_BLUE}Action on this stash [d,b,s,a,q,?]? {TTY_CLEAR}");
         io::stdout().flush()?;
-        let action = read_line()?;
+        let action = match read_line() {
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                println!();
+                break;
+            }
+            result => result?,
+        };
         match action.as_str() {
-            "d" => drop_stash(stash_num)?,
+            "d" => match drop_stash(stash_num) {
+                Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
+                    println!();
+                    break;
+                }
+                result => { result?; }
+            }
             "b" => commit_to_branch(stash_num, can_save_branch)?,
             "s" => { stash_num += 1; }
             "a" => {
@@ -147,9 +157,9 @@ fn main() -> io::Result<()> {
                 break;
             }
             "q" => { break; }
-            "?" => {
+            "?" | "" => {
                 println!(
-                    "{TTY_BOLD_RED}\
+                    "{TTY_BOLD}{TTY_RED}\
                     d - drop this stash\n\
                     b - commit this stash to a separate branch and delete it\n\
                     s - take no action on this stash\n\
