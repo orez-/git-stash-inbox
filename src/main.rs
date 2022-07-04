@@ -1,6 +1,6 @@
 use std::ffi::OsStr;
 use std::fs::File;
-use std::io::{self, BufRead, BufReader};
+use std::io::{self, BufRead, BufReader, Write};
 use std::process::Command;
 use const_format::formatcp;
 
@@ -58,6 +58,7 @@ fn drop_stash(stash_num: u32) {
         .success();
     if !applied {
         print!("Stash may not be applied. Drop anyway? [y/N] ");
+        io::stdout().flush().unwrap();
         if read_line() != "y" {
             return
         }
@@ -129,6 +130,7 @@ fn main() {
         }
         once = true;
         print!("{TTY_BOLD_BLUE}Action on this stash [d,b,s,a,q,?]? {TTY_CLEAR}");
+        io::stdout().flush().unwrap();
         let action = read_line();
         match action.as_str() {
             "d" => drop_stash(stash_num),
@@ -141,7 +143,7 @@ fn main() {
             "q" => { break; }
             "?" => {
                 println!(
-                    "{TTY_BOLD_RED}
+                    "{TTY_BOLD_RED}\
                     d - drop this stash\n\
                     b - commit this stash to a separate branch and delete it\n\
                     s - take no action on this stash\n\
