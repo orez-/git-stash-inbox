@@ -1,7 +1,7 @@
 use std::ffi::OsStr;
 use std::fs::File;
 use std::io::{self, BufRead, BufReader, Write};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use const_format::formatcp;
 
 macro_rules! tty_af {
@@ -28,45 +28,48 @@ where I: IntoIterator<Item = S>,
     cmd
 }
 
-fn has_local_changes() -> bool {
-    !git(["status", "--porcelain"])
-        .output()
-        .unwrap()
+fn has_local_changes() -> io::Result<bool> {
+    let has = !git(["status", "--porcelain"])
+        .output()?
         .stdout
-        .is_empty()
+        .is_empty();
+    Ok(has)
 }
 
-fn git_stash_show(stash_num: u32) -> bool {
+fn error(message: &str) -> io::Error {
+    io::Error::new(io::ErrorKind::Other, message)
+}
+
+fn git_stash_show(stash_num: u32) -> io::Result<bool> {
     let code = git(["stash", "show", "-p", &stash_ref(stash_num)])
-        // TODO: redirect stderr=fnull
-        .status()
-        .unwrap()
+        .stderr(Stdio::null())
+        .status()?
         .code()
-        .unwrap();
-    code != 0 && code != 141
+        .ok_or_else(|| error("terminated by signal"))?;
+    Ok(code == 0 || code == 141)
 }
 
-fn read_line() -> String {
-    io::stdin().lock().lines().next().unwrap().unwrap()
+fn read_line() -> io::Result<String> {
+    io::stdin().lock().lines().next().unwrap()
 }
 
-fn drop_stash(stash_num: u32) {
+fn drop_stash(stash_num: u32) -> io::Result<()> {
     let stash_name = stash_ref(stash_num);
     let applied = !git(["stash-applied", &stash_name])
-        .status()
-        .unwrap()
+        .status()?
         .success();
     if !applied {
         print!("Stash may not be applied. Drop anyway? [y/N] ");
-        io::stdout().flush().unwrap();
-        if read_line() != "y" {
-            return
+        io::stdout().flush()?;
+        if read_line()? != "y" {
+            return Ok(());
         }
     }
-    git(["stash", "drop", &stash_name]);
+    git(["stash", "drop", &stash_name]).status()?;
+    Ok(())
 }
 
-fn commit_to_branch(stash_num: u32, can_save_branch: bool) {
+fn commit_to_branch(stash_num: u32, can_save_branch: bool) -> io::Result<()> {
     let stash_name = stash_ref(stash_num);
     if !can_save_branch {
         eprintln!(
@@ -74,43 +77,46 @@ fn commit_to_branch(stash_num: u32, can_save_branch: bool) {
             ERROR - Can't commit branches with unstaged files!.\
             {TTY_CLEAR}"
         );
-        return;
+        return Ok(());
     }
     let commit_msg_file = ".git/COMMIT_EDITMSG";
 
     let branch_name = "stash/__TEMP_STASH__";
-    git(["checkout", "-b", branch_name]);
-    git(["stash", "apply", &stash_name]);
-    git(["add", "."]);
-    if !git(["commit", "-n"]).status().unwrap().success() {
-        git(["reset", "HEAD"]);
-        git(["checkout", "."]);
-        git(["clean", "-f"]);
-        git(["checkout", "-"]);
-        git(["branch", "-d", branch_name]);
-        return;
+    git(["checkout", "-b", branch_name]).status()?;
+    git(["stash", "apply", &stash_name]).status()?;
+    git(["add", "."]).status()?;
+    if !git(["commit", "-n"]).status()?.success() {
+        git(["reset", "HEAD"]).status()?;
+        git(["checkout", "."]).status()?;
+        git(["clean", "-f"]).status()?;
+        git(["checkout", "-"]).status()?;
+        git(["branch", "-d", branch_name]).status()?;
+        return Ok(());
     }
 
     // Change the branch name to the first line of the commit message.
-    let file = File::open(commit_msg_file).unwrap();
+    let file = File::open(commit_msg_file)?;
     let reader = BufReader::new(file);
-    let subject = reader.lines().find_map(|line| {
-        let line = line.unwrap();
-        (!line.is_empty() && !line.starts_with('#')).then(|| line)
-    }).unwrap();
+    let subject = reader.lines()
+        .map_while(|line| line.ok())
+        .find_map(|line| {
+            (!line.is_empty() && !line.starts_with('#')).then(|| line)
+        })
+        .ok_or_else(|| error("no lines found"))?;
 
     let subject_terms: Vec<_> = subject.trim().split_whitespace().collect();
     let mut subject = subject_terms.join("_");
     subject.retain(|c| c == '_' || c.is_alphanumeric());
     let new_branch_name = format!("stash/{}", &subject.to_lowercase());
 
-    git(["branch", "-m", &new_branch_name]);
-    git(["checkout", "-"]);
-    git(["stash", "drop", &stash_name]);
+    git(["branch", "-m", &new_branch_name]).status()?;
+    git(["checkout", "-"]).status()?;
+    git(["stash", "drop", &stash_name]).status()?;
+    Ok(())
 }
 
-fn main() {
-    let can_save_branch = !has_local_changes();
+fn main() -> io::Result<()> {
+    let can_save_branch = !has_local_changes()?;
     if !can_save_branch {
         eprintln!(
             "{TTY_BOLD_RED}\
@@ -120,9 +126,9 @@ fn main() {
         );
     }
     let mut stash_num = 0;
-    let mut once = true;
+    let mut once = false;
     loop {
-        if !git_stash_show(stash_num) {
+        if !git_stash_show(stash_num)? {
             if !once {
                 println!("No stashes found.");
             }
@@ -130,11 +136,11 @@ fn main() {
         }
         once = true;
         print!("{TTY_BOLD_BLUE}Action on this stash [d,b,s,a,q,?]? {TTY_CLEAR}");
-        io::stdout().flush().unwrap();
-        let action = read_line();
+        io::stdout().flush()?;
+        let action = read_line()?;
         match action.as_str() {
-            "d" => drop_stash(stash_num),
-            "b" => commit_to_branch(stash_num, can_save_branch),
+            "d" => drop_stash(stash_num)?,
+            "b" => commit_to_branch(stash_num, can_save_branch)?,
             "s" => { stash_num += 1; }
             "a" => {
                 git(["stash", "apply", &stash_ref(stash_num)]);
@@ -156,4 +162,5 @@ fn main() {
             _ => (),
         }
     }
+    Ok(())
 }
