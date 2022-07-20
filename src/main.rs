@@ -46,6 +46,12 @@ fn git_stash_show(stash_num: u32) -> io::Result<bool> {
     Ok(code == 0 || code == 141)
 }
 
+fn git_stashes_is_empty() -> io::Result<bool> {
+    git(["rev-parse", "-q", "--verify", "refs/stash"])
+        .status()
+        .map(|s| !s.success())
+}
+
 fn read_line() -> io::Result<String> {
     io::stdin().lock().lines().next()
         .ok_or_else(|| io::Error::from(io::ErrorKind::UnexpectedEof))?
@@ -124,15 +130,11 @@ fn main() -> io::Result<()> {
         );
     }
     let mut stash_num = 0;
-    let mut once = false;
-    loop {
-        if !git_stash_show(stash_num)? {
-            if !once {
-                println!("No stashes found.");
-            }
-            break;
-        }
-        once = true;
+    if git_stashes_is_empty()? {
+        println!("No stashes found.");
+        return Ok(());
+    }
+    while git_stash_show(stash_num)? {
         print!("{TTY_BOLD}{TTY_BLUE}Action on this stash [d,b,s,a,q,?]? {TTY_CLEAR}");
         io::stdout().flush()?;
         let action = match read_line() {
