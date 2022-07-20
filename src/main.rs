@@ -16,6 +16,7 @@ fn stash_ref(id: u32) -> String {
     format!("stash@{{{}}}", id)
 }
 
+#[must_use = "git command builder was not run. Try calling `status`"]
 fn git<I, S>(args: I) -> Command
 where I: IntoIterator<Item = S>,
       S: AsRef<OsStr>
@@ -108,7 +109,7 @@ fn commit_to_branch(stash_num: u32, can_save_branch: bool) -> io::Result<()> {
         })
         .ok_or_else(|| error("no lines found"))?;
 
-    let subject_terms: Vec<_> = subject.trim().split_whitespace().collect();
+    let subject_terms: Vec<_> = subject.split_whitespace().collect();
     let mut subject = subject_terms.join("_");
     subject.retain(|c| c == '_' || c.is_alphanumeric());
     let new_branch_name = format!("stash/{}", &subject.to_lowercase());
@@ -155,7 +156,7 @@ fn main() -> io::Result<()> {
             "b" => commit_to_branch(stash_num, can_save_branch)?,
             "s" => { stash_num += 1; }
             "a" => {
-                git(["stash", "apply", &stash_ref(stash_num)]);
+                git(["stash", "apply", &stash_ref(stash_num)]).status()?;
                 break;
             }
             "q" => { break; }
